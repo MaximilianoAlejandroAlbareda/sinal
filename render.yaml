@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: sinal
+    runtime: node
+    plan: free
+    region: oregon
+    branch: main
+    buildCommand: bun install && bun run build
+    startCommand: node server/cli.js
+    healthCheckPath: /
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: NODE_VERSION
+        value: "22"
+      # O binário do Electron (~100 MB) não é usado no servidor: só o ws e o dist.
+      - key: ELECTRON_SKIP_BINARY_DOWNLOAD
+        value: "1"
+      # VITE_SIGNALING_URL e VITE_TURN_* NÃO entram aqui: são lidos no build do
+      # cliente e o site publicado deriva o wss da própria origem.
