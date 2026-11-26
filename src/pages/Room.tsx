@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { publicAppUrl } from '../lib/signaling'
+import { boostAudio, type AudioChain } from '../lib/audio'
 import { useRoom } from '../lib/useRoom'
 import type { CaptureSource } from '../env'
 import { Logo } from './Home'
@@ -10,6 +11,15 @@ type Props = { code: string; isHost: boolean }
 // Sem isso, quando a janela capturada muda de formato (ex.: vídeo em tela cheia) o
 // Chromium recorta a imagem para caber no enquadramento antigo — some a parte de baixo.
 const CAPTURE_VIDEO = { frameRate: { ideal: 60, max: 60 }, resizeMode: 'none' } as unknown as MediaTrackConstraints
+
+// Áudio do sistema não é voz: os filtros de voz do Chromium (cancela eco, corta
+// ruído, ajusta ganho) abafam música e som de jogo. Pedimos a captura crua.
+const CAPTURE_AUDIO = {
+  echoCancellation: false,
+  noiseSuppression: false,
+  autoGainControl: false,
+  channelCount: 2,
+} as unknown as MediaTrackConstraints
 
 export default function Room({ code, isHost }: Props) {
   const [name, setName] = useState(() => localStorage.getItem('sinal:nome') ?? '')
@@ -66,6 +76,9 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
   const [copied, setCopied] = useState(false)
   const [shareError, setShareError] = useState('')
   const [lan, setLan] = useState<{ host: string; port: number } | null>(null)
+  const [audioWarning, setAudioWarning] = useState('')
+  const audioCheckRef = useRef<{ timer: number; ctx: AudioContext } | null>(null)
+  const audioChainRef = useRef<AudioChain | null>(null)
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const chatEndRef = useRef<HTMLDivElement>(null)
@@ -84,6 +97,45 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ block: 'end' })
   }, [messages])
+
+  // A lista de janelas do Windows muda com o seletor aberto: janela minimizada sai
+  // da lista e só volta quando é restaurada/repintada. Atualiza sozinha para o
+  // usuário não precisar fechar e abrir o seletor de novo.
+  const pickerOpen = picker !== null
+  useEffect(() => {
+    if (!pickerOpen) return
+    let alive = true
+    const refresh = async () => {
+      if (!window.sinal) return
+      try {
+        const sources = await window.sinal.listSources()
+        if (!alive) return
+        setPicker((current) => {
+          if (!current) return current
+          const next = current
+            .filter((source) => sources.some((item) => item.id === source.id))
+            .map((source) => sources.find((item) => item.id === source.id) ?? source)
+          for (const source of sources) {
+            if (!next.some((item) => item.id === source.id)) next.push(source)
+          }
+          const same =
+            next.length === current.length &&
+            next.every(
+              (source, index) =>
+                source.id === current[index].id && source.thumbnail === current[index].thumbnail,
+            )
+          return same ? current : next
+        })
+      } catch {
+        // a próxima atualização tenta de novo
+      }
+    }
+    const timer = window.setInterval(refresh, 1500)
+    return () => {
+      alive = false
+      window.clearInterval(timer)
+    }
+  }, [pickerOpen])
 
   // Se a fonte mudar de formato no meio da transmissão (tela cheia, rotação, troca
   // de resolução), recaptura e troca a track para o enquadramento voltar ao normal.
@@ -139,8 +191,67 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
     }
   }
 
+  // O loopback do Windows captura a saída padrão; se ela for um dispositivo
+  // virtual (Sonar, Voicemod, NVIDIA) ou estiver sem volume, sai silêncio e o
+  // espectador não ouve nada. Medir o nível logo após publicar torna isso visível.
+  function checkAudio(stream: MediaStream) {
+    const running = audioCheckRef.current
+    if (running) {
+      window.clearInterval(running.timer)
+      void running.ctx.close()
+      audioCheckRef.current = null
+    }
+
+    const track = stream.getAudioTracks()[0]
+    if (!track) {
+      setAudioWarning('A transmissão saiu sem áudio. Marque "Incluir áudio do sistema" e transmita de novo.')
+      return
+    }
+
+    const ctx = new AudioContext()
+    const analyser = ctx.createAnalyser()
+    analyser.fftSize = 2048
+    ctx.createMediaStreamSource(new MediaStream([track])).connect(analyser)
+    const buffer = new Float32Array(analyser.fftSize)
+    const started = Date.now()
+    let peak = 0
+
+    const timer = window.setInterval(() => {
+      analyser.getFloatTimeDomainData(buffer)
+      for (const value of buffer) peak = Math.max(peak, Math.abs(value))
+      if (Date.now() - started < 5000) return
+      window.clearInterval(timer)
+      audioCheckRef.current = null
+      void ctx.close()
+      setAudioWarning(
+        peak < 0.002
+          ? 'O áudio do sistema está saindo mudo. O Windows captura o dispositivo de saída padrão: se ele for virtual (SteelSeries Sonar, Voicemod, NVIDIA) ou estiver sem volume, os espectadores não ouvem nada. Troque a saída padrão para o fone ou a caixa e transmita de novo.'
+          : '',
+      )
+    }, 200)
+
+    audioCheckRef.current = { timer, ctx }
+  }
+
+  // Publica o áudio já ampliado: o que sai para os espectadores tem nível audível
+  // e silêncio de verdade nas pausas, sem depender do dispositivo de saída do PC.
+  function withBoostedAudio(captured: MediaStream): MediaStream {
+    audioChainRef.current?.dispose()
+    audioChainRef.current = null
+    const chain = boostAudio(captured)
+    if (!chain) return captured
+    audioChainRef.current = chain
+    return new MediaStream([...captured.getVideoTracks(), ...chain.stream.getAudioTracks()])
+  }
+
+  function releaseAudio() {
+    audioChainRef.current?.dispose()
+    audioChainRef.current = null
+  }
+
   async function startSharing() {
     setShareError('')
+    setAudioWarning('')
     try {
       if (window.sinal?.isDesktop) {
         const sources = await window.sinal.listSources()
@@ -149,9 +260,9 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
       }
       const captured = await navigator.mediaDevices.getDisplayMedia({
         video: CAPTURE_VIDEO,
-        audio: true,
+        audio: CAPTURE_AUDIO,
       })
-      publish(captured)
+      publish(withBoostedAudio(captured))
     } catch (err) {
       const failure = err as Error
       if (failure.name !== 'NotAllowedError') setShareError(`Não foi possível capturar a tela: ${failure.message}`)
@@ -165,10 +276,11 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
       await window.sinal.selectSource(source.id, includeAudio)
       const captured = await navigator.mediaDevices.getDisplayMedia({
         video: CAPTURE_VIDEO,
-        audio: includeAudio,
+        audio: includeAudio ? CAPTURE_AUDIO : false,
       })
       sourceIdRef.current = source.id
-      publish(captured)
+      publish(withBoostedAudio(captured))
+      checkAudio(captured)
     } catch (err) {
       const failure = err as Error
       if (failure.name !== 'NotAllowedError') setShareError(`Não foi possível capturar a tela: ${failure.message}`)
@@ -184,9 +296,10 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
       await window.sinal.selectSource(sourceId, includeAudio)
       const captured = await navigator.mediaDevices.getDisplayMedia({
         video: CAPTURE_VIDEO,
-        audio: includeAudio,
+        audio: includeAudio ? CAPTURE_AUDIO : false,
       })
-      replaceCapture(captured)
+      replaceCapture(withBoostedAudio(captured))
+      checkAudio(captured)
     } catch {
       /* segue com a captura atual */
     }
@@ -207,14 +320,36 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
 
   function stopSharing() {
     void window.sinal?.clearSource?.()
+    const running = audioCheckRef.current
+    if (running) {
+      window.clearInterval(running.timer)
+      void running.ctx.close()
+      audioCheckRef.current = null
+    }
+    setAudioWarning('')
+    releaseAudio()
     unpublish()
   }
 
   function leaveRoom() {
     void window.sinal?.clearSource?.()
+    releaseAudio()
     unpublish()
     location.hash = ''
   }
+
+  useEffect(
+    () => () => {
+      const running = audioCheckRef.current
+      if (running) {
+        window.clearInterval(running.timer)
+        void running.ctx.close()
+      }
+      audioChainRef.current?.dispose()
+      audioChainRef.current = null
+    },
+    [],
+  )
 
   const overlays = state === 'error' || state === 'closed'
 
@@ -310,6 +445,7 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
           )}
 
           {shareError && <p className="field-error pad">{shareError}</p>}
+          {isHost && audioWarning && <p className="field-error pad">{audioWarning}</p>}
         </main>
 
         <aside className="sidebar">
@@ -428,6 +564,7 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
             <h2>O que você quer transmitir?</h2>
             <p className="muted">
               Escolha a tela ou a janela do jogo. Com o app desktop o áudio do sistema é capturado junto.
+              Janelas minimizadas não aparecem: restaure a janela para ela entrar na lista.
             </p>
 
             <div className="sources">

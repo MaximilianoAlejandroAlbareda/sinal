@@ -39,6 +39,19 @@ function viewerProfile(viewers: number) {
   return { maxBitrate: 2_500_000, maxHeight: 720 }
 }
 
+// O Opus do WebRTC abre ~32 kb/s em modo voz: serve para fala e vira chiado em
+// música/som de jogo. Sobe o teto do áudio para o encoder usar banda de verdade.
+function tuneAudioSender(sender: RTCRtpSender) {
+  try {
+    const params = sender.getParameters()
+    params.encodings = params.encodings?.length ? params.encodings : [{}]
+    params.encodings[0].maxBitrate = 128_000
+    void sender.setParameters(params).catch(() => {})
+  } catch {
+    /* segue com o padrão do navegador */
+  }
+}
+
 function rtcConfig(): RTCConfiguration {
   const iceServers: RTCIceServer[] = [
     { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
@@ -159,6 +172,9 @@ export function useRoom(room: string, name: string, isHost: boolean) {
       const videoSender = pc.getSenders().find((item) => item.track?.kind === 'video')
       if (videoSender) await tuneSender(videoSender, Math.max(1, pcsRef.current.size))
 
+      const audioSender = pc.getSenders().find((item) => item.track?.kind === 'audio')
+      if (audioSender) tuneAudioSender(audioSender)
+
       send({ type: 'signal', to: peerId, data: { kind: 'offer', sdp: pc.localDescription } })
     },
     [send, tuneSender],
@@ -267,6 +283,9 @@ export function useRoom(room: string, name: string, isHost: boolean) {
         track.contentHint = 'motion'
         track.addEventListener('ended', () => unpublishRef.current())
       })
+      stream.getAudioTracks().forEach((track) => {
+        track.contentHint = 'music'
+      })
       send({ type: 'live', live: true })
       setLive(true)
       for (const peerId of peersRef.current.keys()) void offerTo(peerId)
@@ -287,6 +306,10 @@ export function useRoom(room: string, name: string, isHost: boolean) {
       if (video) {
         video.contentHint = 'motion'
         video.addEventListener('ended', () => unpublishRef.current())
+      }
+
+      if (audio) {
+        audio.contentHint = 'music'
       }
 
       localStreamRef.current = stream
