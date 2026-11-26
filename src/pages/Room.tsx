@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { publicAppUrl } from '../lib/signaling'
 import { useRoom } from '../lib/useRoom'
 import type { CaptureSource } from '../env'
 import { Logo } from './Home'
@@ -120,9 +121,13 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
     }
   }, [isHost])
 
-  const viewerLink = lan
-    ? `http://${lan.host}:${lan.port}${location.pathname}#/sala/${code}`
-    : `${location.origin}${location.pathname}#/sala/${code}`
+  // Com a sinalização publicada configurada, o convite é a página do Render — serve
+  // para qualquer rede. O link da LAN fica como atalho para quem está no mesmo Wi-Fi.
+  const publicUrl = publicAppUrl()
+  const lanLink = lan ? `http://${lan.host}:${lan.port}${location.pathname}#/sala/${code}` : null
+  const viewerLink = publicUrl
+    ? `${publicUrl}/#/sala/${code}`
+    : (lanLink ?? `${location.origin}${location.pathname}#/sala/${code}`)
 
   async function copyLink() {
     try {
@@ -292,9 +297,15 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
             )}
           </div>
 
-          {isHost && lan && (
+          {isHost && (publicUrl || lanLink) && (
             <p className="invite">
-              Na mesma rede: <code>{viewerLink}</code>
+              {publicUrl ? 'Link para convidados' : 'Na mesma rede'}: <code>{viewerLink}</code>
+            </p>
+          )}
+
+          {isHost && publicUrl && lanLink && (
+            <p className="invite">
+              Na mesma rede: <code>{lanLink}</code>
             </p>
           )}
 

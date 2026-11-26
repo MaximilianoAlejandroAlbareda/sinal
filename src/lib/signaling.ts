@@ -14,6 +14,26 @@ export type ServerMessage =
 
 export type ConnStatus = 'open' | 'closed'
 
+/**
+ * Endereço da página publicada, deduzido de VITE_SIGNALING_URL
+ * (ex.: wss://sinal.onrender.com/ws → https://sinal.onrender.com). É o link que o
+ * anfitrião no app desktop manda para os convidados; sem a variável, null.
+ */
+export function publicAppUrl(): string | null {
+  const explicit = import.meta.env.VITE_SIGNALING_URL as string | undefined
+  if (!explicit) return null
+  try {
+    const url = new URL(explicit)
+    url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:'
+    url.pathname = '/'
+    url.search = ''
+    url.hash = ''
+    return url.origin
+  } catch {
+    return null
+  }
+}
+
 export function signalingUrl(): string {
   const explicit = import.meta.env.VITE_SIGNALING_URL as string | undefined
   if (explicit) return explicit
