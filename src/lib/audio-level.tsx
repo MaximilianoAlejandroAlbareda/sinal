@@ -7,15 +7,21 @@ type AudioLevelProps = {
   style?: React.CSSProperties
 }
 
-export function AudioLevel({ stream, width = 100, height = 50, style }: AudioLevelProps) {
+export function AudioLevel({ stream, width = 180, height = 60, style }: AudioLevelProps) {
   const [peaks, setPeaks] = useState<number[]>([])
   const ctxRef = useRef<AudioContext | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
+  const hasTrackRef = useRef(false)
 
   useEffect(() => {
     ctxRef.current = new AudioContext({ sampleRate: 48000 })
-    const track = stream.getAudioTracks()[0]
-    if (!track) return
+    const track = stream?.getAudioTracks()[0]
+    hasTrackRef.current = !!track
+    if (!track) {
+      // Nenhum track de áudio: mostrar estado silencioso em vez de tentar conectar
+      setPeaks([0])
+      return
+    }
 
     const input = ctxRef.current.createMediaStreamSource(new MediaStream([track]))
     const analyser = ctxRef.current.createAnalyser()
@@ -29,9 +35,13 @@ export function AudioLevel({ stream, width = 100, height = 50, style }: AudioLev
 
     const dataArray = new Uint8Array(analyser.frequencyBinCount)
     const render = () => {
-      analyser.getByteFrequencyData(dataArray)
-      const average = dataArray.reduce((a: number, b: number) => a + b, 0) / dataArray.length
-      setPeaks(prev => [...prev.slice(-9), average]) // keeps last 10 values
+      try {
+        analyser.getByteFrequencyData(dataArray)
+        const average = dataArray.reduce((a: number, b: number) => a + b, 0) / dataArray.length
+        setPeaks(prev => [...prev.slice(-9), average]) // keeps last 10 values
+      } catch (e) {
+        // Erro ao ler dados (contexto fechado, etc.)
+      }
       requestAnimationFrame(render)
     }
 
@@ -57,36 +67,48 @@ export function AudioLevel({ stream, width = 100, height = 50, style }: AudioLev
     ...style,
   }
 
+  // Se não há track de áudio, mostrar estado silencioso em vez de barra vazia
+  const hasAudio = hasTrackRef.current && maxPeak > 0
+
   return (
     <div style={containerStyle}>
-      <div
-        style={{
-          position: 'relative',
-          width: '100%',
-          height: '100%',
-          background: 'linear-gradient(to top, var(--accent) 0%, transparent 50%)',
-          borderRadius: '5px 5px 0 0',
-          overflow: 'hidden',
-        }}
-      >
+      {!hasAudio && (
         <div
           style={{
-            height: `${Math.max(0, barHeight - 2)}px`,
+            position: 'relative',
             width: '100%',
-          }}
-        />
-        <span
-          style={{
-            position: 'absolute',
-            bottom: 4,
-            right: 4,
-            color: '#fff',
-            fontSize: 12,
+            height: '100%',
+            background: 'var(--panel-2)',
+            borderRadius: '5px 5px 0 0',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: rgb(138, 147, 170),
+            fontSize: 11,
           }}
         >
-          {maxPeak > 0 ? Math.round(maxPeak) : '—'}
-        </span>
-      </div>
+          —
+        </div>
+      )}
+      {hasAudio && (
+        <div
+          style={{
+            position: 'relative',
+            width: '100%',
+            height: '100%',
+            background: 'linear-gradient(to top, var(--accent) 0%, transparent 50%)',
+            borderRadius: '5px 5px 0 0',
+            overflow: 'hidden',
+          }}
+        >
+          <div
+            style={{
+              height: `${Math.max(0, barHeight - 2)}px`,
+              width: '100%',
+            }}
+          />
+        </div>
+      )}
     </div>
   )
 }
