@@ -3,7 +3,6 @@ import { publicAppUrl } from '../lib/signaling'
 import { boostAudio, type AudioChain } from '../lib/audio'
 import { startProcessAudio, type ProcessAudio } from '../lib/processAudio'
 import { useRoom } from '../lib/useRoom'
-import { AudioLevel } from '../lib/audio-level'
 import type { AudioProcess, CaptureSource } from '../env'
 import { Logo } from './Home'
 
@@ -78,7 +77,8 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
   const [chatDraft, setChatDraft] = useState('')
   const [picker, setPicker] = useState<CaptureSource[] | null>(null)
   const [includeAudio, setIncludeAudio] = useState(true)
-  const [muted, setMuted] = useState(false)
+  const [volume, setVolume] = useState(1)
+  const lastVolumeRef = useRef(1)
   const [hasAudio, setHasAudio] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -107,6 +107,12 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
   useEffect(() => {
     if (videoRef.current) videoRef.current.srcObject = stream
   }, [stream])
+
+  // O volume vive no elemento de vídeo e não sobrevive à troca de stream: sem
+  // reaplicar, um <video> recém-criado voltaria a tocar a 100%.
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.volume = volume
+  }, [volume, stream])
 
   // A track de áudio chega em um evento separado do vídeo e pode nem existir: sem
   // isso o botão de som ficava ativo sem nada para silenciar.
@@ -137,6 +143,17 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
       return
     }
     void frameRef.current?.requestFullscreen?.().catch(() => {})
+  }
+
+  // Clicar no ícone alterna mudo e o último volume usado, como no player do YouTube.
+  function toggleMute() {
+    setVolume((current) => {
+      if (current > 0) {
+        lastVolumeRef.current = current
+        return 0
+      }
+      return lastVolumeRef.current > 0 ? lastVolumeRef.current : 1
+    })
   }
 
   useEffect(() => {
@@ -519,7 +536,7 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
                 ref={videoRef}
                 autoPlay
                 playsInline
-                muted={isHost || muted}
+                muted={isHost || volume === 0}
               />
             ) : (
               <div className="empty-stage">
@@ -537,17 +554,66 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
               <div className="stage-tools">
                 {/* Sem track de áudio não há o que silenciar: um botão ativo aqui só confundia. */}
                 {!isHost && hasAudio && (
-                  <button className="button ghost small" onClick={() => setMuted((value) => !value)}>
-                    {muted ? 'Ativar som' : 'Silenciar'}
-                  </button>
+                  <div className={`volume${volume === 0 ? ' is-muted' : ''}`}>
+                    <button
+                      type="button"
+                      className="volume-icon"
+                      onClick={toggleMute}
+                      title={volume === 0 ? 'Ativar som' : 'Silenciar'}
+                      aria-label={volume === 0 ? 'Ativar som' : 'Silenciar'}
+                    >
+                      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                        <path d="M4 9.6h3.3L12 5.6v12.8L7.3 14.4H4z" fill="currentColor" />
+                        {volume === 0 ? (
+                          <path
+                            d="M16 9.5l4.5 5M20.5 9.5L16 14.5"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.7"
+                            strokeLinecap="round"
+                          />
+                        ) : (
+                          <>
+                            <path
+                              d={`M15.6 9.1a4.3 4.3 0 0 1 0 5.8`}
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.7"
+                              strokeLinecap="round"
+                            />
+                            {volume > 0.5 && (
+                              <path
+                                d="M18.4 6.4a8.4 8.4 0 0 1 0 11.2"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.7"
+                                strokeLinecap="round"
+                              />
+                            )}
+                          </>
+                        )}
+                      </svg>
+                    </button>
+                    <input
+                      type="range"
+                      className="volume-slider"
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={volume}
+                      aria-label="Volume da transmissão"
+                      onChange={(event) => setVolume(Number(event.target.value))}
+                      style={{ ['--fill' as string]: `${volume * 100}%` } as React.CSSProperties}
+                    />
+                  </div>
                 )}
                 {!isHost && !hasAudio && (
                   <span className="stage-hint" title="O anfitrião está transmitindo sem áudio">
                     Sem áudio
                   </span>
                 )}
-                {/* A tela cheia vai no quadro, não no <video>: assim o som e o medidor
-                   continuam acessíveis em vez dos controles nativos desabilitados. */}
+                {/* A tela cheia vai no quadro, não no <video>: assim o som continua
+                   acessível em vez dos controles nativos desabilitados. */}
                 {!isHost && (
                   <button className="button ghost small" onClick={toggleFullscreen}>
                     {isFullscreen ? 'Sair da tela cheia' : 'Tela cheia'}
@@ -556,15 +622,6 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
               </div>
             )}
 
-            {/* Medidor de áudio: só para espectadores, dentro do quadro do vídeo */}
-            {!isHost && live && stream && (
-              <AudioLevel
-                stream={stream}
-                width={180}
-                height={60}
-                style={{ bottom: 12, left: 12 }}
-              />
-            )}
           </div>
 
           <div className="controls">

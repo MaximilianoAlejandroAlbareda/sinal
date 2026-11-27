@@ -76,54 +76,11 @@ function bindAudioData(capture) {
 
 let pendingCapture = null
 
-// O Chromium recorta o frame para a proporção escolhida quando a captura começa,
-// então se a janela compartilhada muda de formato (ex.: vídeo em tela cheia) a
-// imagem sai cortada. Vigiando a proporção real da fonte da para recapturar na hora.
-let watched = null
-
-async function computeAspect(id) {
-  if (!id) return null
-  const sources = await desktopCapturer.getSources({
-    types: ['screen', 'window'],
-    thumbnailSize: { width: 180, height: 180 },
-    fetchWindowIcons: false,
-  })
-  const source = sources.find((item) => item.id === id)
-  if (!source) return null
-  const size = source.thumbnail.getSize()
-  if (!size.width || !size.height) return null
-  return size.width / size.height
-}
-
-function startWatching(id, win) {
-  stopWatching()
-  watched = { id, aspect: null, timer: null }
-
-  const tick = async () => {
-    const current = watched
-    if (!current || current.id !== id) return
-    try {
-      const aspect = await computeAspect(id)
-      if (!aspect || !watched || watched.id !== id) return
-      if (watched.aspect === null) {
-        watched.aspect = aspect
-      } else if (Math.abs(aspect - watched.aspect) / watched.aspect > 0.02) {
-        watched.aspect = aspect
-        if (!win.isDestroyed()) win.webContents.send('capture:refit')
-      }
-    } catch {
-      /* ignora falhas de enumeração */
-    }
-  }
-
-  watched.timer = setInterval(tick, 1500)
-  void tick()
-}
-
-function stopWatching() {
-  if (watched?.timer) clearInterval(watched.timer)
-  watched = null
-}
+// A proporção da janela compartilhada é vigiada pelo próprio renderer (o preview do
+// vídeo avisa quando o frame muda de tamanho, ver refit() em Room.tsx). Aqui não se
+// enumera mais a tela a cada 1,5 s: getSources com miniatura trava o processo
+// principal por dezenas de ms e é justamente ele que repassa o áudio capturado,
+// então cada varredura virava um corte de som de 20-90 ms em quem assiste.
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -258,17 +215,13 @@ app.whenReady().then(async () => {
       }))
   })
 
-  ipcMain.handle('capture:select', (event, payload) => {
+  ipcMain.handle('capture:select', (_event, payload) => {
     const id = String(payload?.id || '')
     pendingCapture = { id, audio: Boolean(payload?.audio) }
-    const win = BrowserWindow.fromWebContents(event.sender)
-    if (win && id.startsWith('window:')) startWatching(id, win)
-    else stopWatching()
   })
 
   ipcMain.handle('capture:clear', () => {
     pendingCapture = null
-    stopWatching()
   })
 
   ipcMain.handle('app:lan', () => ({ port: PORT, addresses: lanAddresses() }))

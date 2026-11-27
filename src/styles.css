@@ -553,6 +553,96 @@ input:focus {
   backdrop-filter: blur(8px);
 }
 
+/* Volume do espectador: ícone + barra fina, no estilo do player do YouTube. */
+.volume {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 28px;
+  padding: 0 12px 0 4px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(10, 11, 16, 0.75);
+  backdrop-filter: blur(8px);
+}
+
+.volume-icon {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+}
+
+.volume-icon:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.volume-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 88px;
+  height: 12px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.volume-slider::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    #fff 0%,
+    #fff var(--fill, 100%),
+    rgba(255, 255, 255, 0.3) var(--fill, 100%),
+    rgba(255, 255, 255, 0.3) 100%
+  );
+}
+
+.volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4.5px;
+  border: 0;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+.volume-slider::-moz-range-track {
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.volume-slider::-moz-range-progress {
+  height: 3px;
+  border-radius: 999px;
+  background: #fff;
+}
+
+.volume-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: 0;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.volume-slider:focus {
+  outline: none;
+  box-shadow: none;
+}
+
 .controls {
   display: flex;
   align-items: center;
