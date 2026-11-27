@@ -472,12 +472,16 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
                     {muted ? 'Ativar som' : 'Silenciar'}
                   </button>
                 )}
-                <button
-                  className="button ghost small"
-                  onClick={() => videoRef.current?.requestFullscreen?.().catch(() => {})}
-                >
-                  Tela cheia
-                </button>
+                {/* Mostrar botão fullscreen apenas quando não estiver compartilhando um app específico
+                   (exclusive fullscreen quebra a captura de app no Windows) */}
+                {!isHost && audioModeRef.current?.kind !== 'app' && (
+                  <button
+                    className="button ghost small"
+                    onClick={() => videoRef.current?.requestFullscreen?.().catch(() => {})}
+                  >
+                    Tela cheia
+                  </button>
+                )}
               </div>
             )}
           </div>
