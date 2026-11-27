@@ -26,6 +26,53 @@ function lanAddresses() {
   return found
 }
 
+// O loopback clássico ("loopback") captura apenas o dispositivo de saída padrão do
+// Windows. Com uma saída virtual (SteelSeries Sonar, Voicemod, NVIDIA) selecionada, a
+// captura sai muda e a saída precisa ser trocada na mão para transmitir. O modo por
+// processo ("loopbackWithoutChrome", Chromium 138+) captura o áudio dos outros apps
+// independente de onde ele está saindo, e deixa de fora o som do próprio app — que era
+// justamente o que voltava como retorno, porque o preview local era recapturado.
+const LOOPBACK_AUDIO_MODE = process.env.SINAL_LOOPBACK === 'padrao' ? 'loopback' : 'loopbackWithoutChrome'
+
+// Áudio de um aplicativo só (WASAPI process loopback, a mesma técnica que o Discord
+// e o OBS usam): captura o processo escolhido e seus filhos, sem o resto do PC. É o
+// que evita o espectador ouvir a call do Discord junto com o vídeo compartilhado.
+// O addon é carregado tarde e de forma tolerante: se ele não carregar, o app segue
+// com o áudio de sistema do getDisplayMedia.
+let audioCapture = null
+let audioCaptureTried = false
+let audioDataBound = false
+
+function getAudioCapture() {
+  if (audioCaptureTried) return audioCapture
+  audioCaptureTried = true
+  try {
+    audioCapture = require('process-audio-capture').audioCapture
+  } catch (err) {
+    console.error('Captura de áudio por aplicativo indisponível:', err.message)
+    audioCapture = null
+  }
+  return audioCapture
+}
+
+function broadcastAudioData(data) {
+  if (!data?.buffer) return
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue
+    win.webContents.send('audio:data', {
+      buffer: data.buffer,
+      channels: Number(data.channels) || 1,
+      sampleRate: Number(data.sampleRate) || 48000,
+    })
+  }
+}
+
+function bindAudioData(capture) {
+  if (audioDataBound) return
+  audioDataBound = true
+  capture.on('audio-data', broadcastAudioData)
+}
+
 let pendingCapture = null
 
 // O Chromium recorta o frame para a proporção escolhida quando a captura começa,
@@ -121,6 +168,43 @@ app.whenReady().then(async () => {
 
   for (const address of lanAddresses()) console.log(`Sala acessível na rede em http://${address}:${PORT}/`)
 
+  ipcMain.handle('audio:list', () => {
+    const capture = getAudioCapture()
+    if (!capture) return []
+    try {
+      const list = capture.getProcessList() || []
+      return list
+        .map((item) => ({ pid: item.pid, name: String(item.name || item.description || '').trim() }))
+        .filter((item) => item.name.length > 0)
+    } catch (err) {
+      console.error('Falha ao listar aplicativos com áudio:', err.message)
+      return []
+    }
+  })
+
+  ipcMain.handle('audio:start', (_event, pid) => {
+    const capture = getAudioCapture()
+    if (!capture) return false
+    try {
+      bindAudioData(capture)
+      if (capture.isCapturing) capture.stopCapture()
+      return Boolean(capture.startCapture(Number(pid)))
+    } catch (err) {
+      console.error('Falha ao capturar o áudio do aplicativo:', err.message)
+      return false
+    }
+  })
+
+  ipcMain.handle('audio:stop', () => {
+    const capture = getAudioCapture()
+    if (!capture) return false
+    try {
+      return Boolean(capture.stopCapture())
+    } catch {
+      return false
+    }
+  })
+
   // Tela/ventana escolhida no app + áudio do sistema (loopback) no Windows.
   session.defaultSession.setDisplayMediaRequestHandler(
     async (request, callback) => {
@@ -133,7 +217,7 @@ app.whenReady().then(async () => {
           callback({})
           return
         }
-        if (choice?.audio) callback({ video: source, audio: 'loopback' })
+        if (choice?.audio) callback({ video: source, audio: LOOPBACK_AUDIO_MODE })
         else callback({ video: source })
       } catch (err) {
         console.error('Falha ao capturar a tela:', err)

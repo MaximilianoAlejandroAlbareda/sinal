@@ -797,6 +797,25 @@ input:focus {
   accent-color: var(--accent);
 }
 
+.audio-pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.audio-pick select {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #0b0d14;
+  color: var(--text);
+  font-size: 13px;
+}
+
 .stats-list {
   list-style: none;
   margin: 0;

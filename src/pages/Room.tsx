@@ -1,11 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
 import { publicAppUrl } from '../lib/signaling'
 import { boostAudio, type AudioChain } from '../lib/audio'
+import { startProcessAudio, type ProcessAudio } from '../lib/processAudio'
 import { useRoom } from '../lib/useRoom'
-import type { CaptureSource } from '../env'
+import { AudioLevel } from '../lib/audio-level'
+import type { AudioProcess, CaptureSource } from '../env'
 import { Logo } from './Home'
 
 type Props = { code: string; isHost: boolean }
+
+// De onde vem o som transmitido: um aplicativo específico (o do que está sendo
+// compartilhado), a saída toda do Windows, ou nada.
+type AudioMode = { kind: 'app'; pid: number } | { kind: 'system' } | { kind: 'none' }
 
 // resizeMode: 'none' pede para o navegador não encaixar a fonte num tamanho fixo.
 // Sem isso, quando a janela capturada muda de formato (ex.: vídeo em tela cheia) o
@@ -77,12 +83,17 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
   const [shareError, setShareError] = useState('')
   const [lan, setLan] = useState<{ host: string; port: number } | null>(null)
   const [audioWarning, setAudioWarning] = useState('')
+  const [audioApps, setAudioApps] = useState<AudioProcess[]>([])
+  const [audioChoice, setAudioChoice] = useState('auto')
   const audioCheckRef = useRef<{ timer: number; ctx: AudioContext } | null>(null)
   const audioChainRef = useRef<AudioChain | null>(null)
+  const processAudioRef = useRef<ProcessAudio | null>(null)
+  const audioModeRef = useRef<AudioMode>({ kind: 'none' })
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const chatEndRef = useRef<HTMLDivElement>(null)
   const sourceIdRef = useRef<string | null>(null)
+  const sourceNameRef = useRef('')
   const geometryRef = useRef('')
   const lastRefitRef = useRef(0)
   const refitRef = useRef<() => void>(() => {})
@@ -121,8 +132,7 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
           const same =
             next.length === current.length &&
             next.every(
-              (source, index) =>
-                source.id === current[index].id && source.thumbnail === current[index].thumbnail,
+              (source, index) => source.id === current[index].id && source.thumbnail === current[index].thumbnail,
             )
           return same ? current : next
         })
@@ -194,7 +204,7 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
   // O loopback do Windows captura a saída padrão; se ela for um dispositivo
   // virtual (Sonar, Voicemod, NVIDIA) ou estiver sem volume, sai silêncio e o
   // espectador não ouve nada. Medir o nível logo após publicar torna isso visível.
-  function checkAudio(stream: MediaStream) {
+  function checkAudio(stream: MediaStream, sourceKind?: 'app' | 'system') {
     const running = audioCheckRef.current
     if (running) {
       window.clearInterval(running.timer)
@@ -204,7 +214,7 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
 
     const track = stream.getAudioTracks()[0]
     if (!track) {
-      setAudioWarning('A transmissão saiu sem áudio. Marque "Incluir áudio do sistema" e transmita de novo.')
+      setAudioWarning('A transmissão saiu sem áudio. Marque "Incluir áudio" e transmita de novo.')
       return
     }
 
@@ -223,8 +233,9 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
       window.clearInterval(timer)
       audioCheckRef.current = null
       void ctx.close()
+      const isSystem = sourceKind === 'system'
       setAudioWarning(
-        peak < 0.002
+        isSystem && peak < 0.002
           ? 'O áudio do sistema está saindo mudo. O Windows captura o dispositivo de saída padrão: se ele for virtual (SteelSeries Sonar, Voicemod, NVIDIA) ou estiver sem volume, os espectadores não ouvem nada. Troque a saída padrão para o fone ou a caixa e transmita de novo.'
           : '',
       )
@@ -235,10 +246,10 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
 
   // Publica o áudio já ampliado: o que sai para os espectadores tem nível audível
   // e silêncio de verdade nas pausas, sem depender do dispositivo de saída do PC.
-  function withBoostedAudio(captured: MediaStream): MediaStream {
+  function withBoostedAudio(captured: MediaStream, onSwitch?: () => void): MediaStream {
     audioChainRef.current?.dispose()
     audioChainRef.current = null
-    const chain = boostAudio(captured)
+    const chain = boostAudio(captured, onSwitch)
     if (!chain) return captured
     audioChainRef.current = chain
     return new MediaStream([...captured.getVideoTracks(), ...chain.stream.getAudioTracks()])
@@ -247,6 +258,68 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
   function releaseAudio() {
     audioChainRef.current?.dispose()
     audioChainRef.current = null
+    processAudioRef.current?.dispose()
+    processAudioRef.current = null
+  }
+
+  // Decide de onde vem o som: por padrão o aplicativo da janela compartilhada, que é
+  // o que impede o espectador de ouvir a call do Discord junto com o vídeo.
+  function resolveAudioMode(sourceName: string): AudioMode {
+    if (!includeAudio) return { kind: 'none' }
+    if (audioChoice === 'system') return { kind: 'system' }
+    if (audioChoice === 'none') return { kind: 'none' }
+    if (audioChoice !== 'auto') {
+      const pid = Number(audioChoice)
+      if (Number.isFinite(pid)) return { kind: 'app', pid }
+    }
+    const title = sourceName.toLowerCase()
+    const match = audioApps.find((app) => {
+      const name = app.name.toLowerCase().replace(/\.exe$/, '')
+      if (!name) return false
+      if (title.includes(name)) return true
+      const first = name.split(' ')[0]
+      return first.length > 3 && title.includes(first)
+    })
+    // Sem correspondência, fica sem áudio: puxar o som do sistema inteiro traria
+    // justamente a call e os outros apps que a captura por aplicativo evita.
+    return match ? { kind: 'app', pid: match.pid } : { kind: 'none' }
+  }
+
+  async function captureSystem(sourceId: string, audio: boolean): Promise<MediaStream> {
+    await window.sinal?.selectSource(sourceId, audio)
+    const captured = await navigator.mediaDevices.getDisplayMedia({
+      video: CAPTURE_VIDEO,
+      audio: audio ? CAPTURE_AUDIO : false,
+    })
+    if (audio) checkAudio(captured, 'system')
+    return withBoostedAudio(captured, () => {})
+  }
+
+  async function captureSelection(sourceId: string, sourceName: string): Promise<MediaStream> {
+    const mode = resolveAudioMode(sourceName)
+    audioModeRef.current = mode
+    releaseAudio()
+
+    if (mode.kind === 'app') {
+      await window.sinal?.selectSource(sourceId, false)
+      const video = await navigator.mediaDevices.getDisplayMedia({ video: CAPTURE_VIDEO, audio: false })
+      const processAudio = await startProcessAudio(mode.pid)
+      if (processAudio) {
+        processAudioRef.current = processAudio
+        checkAudio(processAudio.stream, 'app')
+        const boosted = withBoostedAudio(processAudio.stream, () => {})
+        return new MediaStream([...video.getVideoTracks(), ...boosted.getAudioTracks()])
+      }
+      // Sem captura por aplicativo, não cai para o som do sistema: seria justamente
+      // o mix com a call e o resto do PC. Melhor transmitir só a imagem.
+      audioModeRef.current = { kind: 'none' }
+      setAudioWarning(
+        'Não foi possível capturar o áudio desse aplicativo. A transmissão saiu sem som — confira em "Áudio de" se ele aparece tocando e transmita de novo.',
+      )
+      return new MediaStream([...video.getVideoTracks()])
+    }
+
+    return captureSystem(sourceId, mode.kind === 'system')
   }
 
   async function startSharing() {
@@ -254,7 +327,11 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
     setAudioWarning('')
     try {
       if (window.sinal?.isDesktop) {
-        const sources = await window.sinal.listSources()
+        const [sources, apps] = await Promise.all([
+          window.sinal.listSources(),
+          window.sinal.listAudioProcesses().catch(() => [] as AudioProcess[]),
+        ])
+        setAudioApps(apps)
         setPicker(sources)
         return
       }
@@ -262,7 +339,7 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
         video: CAPTURE_VIDEO,
         audio: CAPTURE_AUDIO,
       })
-      publish(withBoostedAudio(captured))
+      publish(withBoostedAudio(captured, () => {}))
     } catch (err) {
       const failure = err as Error
       if (failure.name !== 'NotAllowedError') setShareError(`Não foi possível capturar a tela: ${failure.message}`)
@@ -273,14 +350,10 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
     setPicker(null)
     if (!window.sinal) return
     try {
-      await window.sinal.selectSource(source.id, includeAudio)
-      const captured = await navigator.mediaDevices.getDisplayMedia({
-        video: CAPTURE_VIDEO,
-        audio: includeAudio ? CAPTURE_AUDIO : false,
-      })
+      const stream = await captureSelection(source.id, source.name)
       sourceIdRef.current = source.id
-      publish(withBoostedAudio(captured))
-      checkAudio(captured)
+      sourceNameRef.current = source.name
+      publish(stream)
     } catch (err) {
       const failure = err as Error
       if (failure.name !== 'NotAllowedError') setShareError(`Não foi possível capturar a tela: ${failure.message}`)
@@ -293,13 +366,8 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
     if (Date.now() - lastRefitRef.current < 1500) return
     lastRefitRef.current = Date.now()
     try {
-      await window.sinal.selectSource(sourceId, includeAudio)
-      const captured = await navigator.mediaDevices.getDisplayMedia({
-        video: CAPTURE_VIDEO,
-        audio: includeAudio ? CAPTURE_AUDIO : false,
-      })
-      replaceCapture(withBoostedAudio(captured))
-      checkAudio(captured)
+      const stream = await captureSelection(sourceId, sourceNameRef.current)
+      replaceCapture(stream)
     } catch {
       /* segue com a captura atual */
     }
@@ -374,8 +442,15 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
       <div className="layout">
         <main className="stage">
           <div className={`video-frame${live && stream ? ' is-live' : ''}`}>
+            {/* O anfitrião já ouve o próprio áudio direto no sistema: tocar o preview
+                aqui fazia o loopback recapturar esse som em laço (o retorno). */}
             {stream ? (
-              <video ref={videoRef} autoPlay playsInline muted={muted} />
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted={isHost || muted}
+              />
             ) : (
               <div className="empty-stage">
                 <div className="pulse" aria-hidden="true" />
@@ -388,17 +463,15 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
               </div>
             )}
 
-            {live && stream && (
-              <span className="live-badge">
-                <i aria-hidden="true" /> AO VIVO
-              </span>
-            )}
+            
 
             {stream && (
               <div className="stage-tools">
-                <button className="button ghost small" onClick={() => setMuted((value) => !value)}>
-                  {muted ? 'Ativar som' : 'Silenciar'}
-                </button>
+                {!isHost && (
+                  <button className="button ghost small" onClick={() => setMuted((value) => !value)}>
+                    {muted ? 'Ativar som' : 'Silenciar'}
+                  </button>
+                )}
                 <button
                   className="button ghost small"
                   onClick={() => videoRef.current?.requestFullscreen?.().catch(() => {})}
@@ -408,6 +481,13 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
               </div>
             )}
           </div>
+
+          {/* Audio level meter visible only for viewers, not the host */}
+          {!isHost && live && stream && (
+            <div style={{ position: 'absolute', bottom: 8, right: 8, zIndex: 10 }}>
+              <AudioLevel stream={stream} width={180} height={60} />
+            </div>
+          )}
 
           <div className="controls">
             <div className="controls-info">
@@ -455,7 +535,11 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
               <span className="count">{peers.length + (selfId ? 1 : 0)}</span>
             </header>
             <ul className="people">
-              <Person tag={isHost && sharing ? 'transmitindo' : 'você'} name={`${name} (você)`} role={isHost ? 'host' : 'viewer'} />
+              <Person
+                tag={isHost && sharing ? 'transmitindo' : 'você'}
+                name={`${name} (você)`}
+                role={isHost ? 'host' : 'viewer'}
+              />
               {peers.map((peer) => (
                 <Person
                   key={peer.id}
@@ -482,7 +566,9 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
                     </span>
                   </li>
                 )}
-                {stats.peers.length === 0 && <li className="stat-row">Aguardando espectador conectar…</li>}
+                {stats.peers.length === 0 && (
+                  <li className="stat-row">Aguardando espectador conectar…</li>
+                )}
                 {stats.peers.map((row) => (
                   <li key={row.id} className="stat-row">
                     <span>{peers.find((peer) => peer.id === row.id)?.name ?? 'Espectador'}</span>
@@ -501,7 +587,7 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
               <span>Chat</span>
             </header>
             <div className="messages">
-              {messages.map((message) =>
+              {messages.map((message) => {
                 message.system ? (
                   <p key={message.id} className="system-message">
                     {message.text}
@@ -511,13 +597,16 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
                     <div className="message-meta">
                       <strong>{message.self ? 'Você' : message.name}</strong>
                       <time>
-                        {new Date(message.ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                        {new Date(message.ts).toLocaleTimeString('pt-BR', {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
                       </time>
                     </div>
                     <p>{message.text}</p>
                   </div>
-                ),
-              )}
+                )
+              })}
               <div ref={chatEndRef} />
             </div>
             <form
@@ -563,8 +652,9 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
           <div className="card wide">
             <h2>O que você quer transmitir?</h2>
             <p className="muted">
-              Escolha a tela ou a janela do jogo. Com o app desktop o áudio do sistema é capturado junto.
-              Janelas minimizadas não aparecem: restaure a janela para ela entrar na lista.
+              Escolha a tela ou a janela do jogo. O som vem só do aplicativo escolhido abaixo: quem assiste
+              não ouve o resto do PC nem a call. Janelas minimizadas não aparecem: restaure a janela para
+              ela entrar na lista.
             </p>
 
             <div className="sources">
@@ -582,9 +672,39 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
             </div>
 
             <label className="checkbox">
-              <input type="checkbox" checked={includeAudio} onChange={(event) => setIncludeAudio(event.target.checked)} />
-              <span>Incluir áudio do sistema (som do jogo, música, call)</span>
+              <input
+                type="checkbox"
+                checked={includeAudio}
+                onChange={(event) => setIncludeAudio(event.target.checked)}
+              />
+              <span>Incluir áudio na transmissão</span>
             </label>
+
+            {includeAudio && (
+              <label className="audio-pick">
+                <span>Áudio de</span>
+                <select
+                  value={audioChoice}
+                  onChange={(event) => setAudioChoice(event.target.value)}
+                >
+                  <option value="auto">Automático (o aplicativo da janela)</option>
+                  {audioApps.map((app) => (
+                    <option key={app.pid} value={String(app.pid)}>
+                      {app.name}
+                    </option>
+                  ))}
+                  <option value="system">Todo o som do sistema</option>
+                  <option value="none">Nada (só a imagem)</option>
+                </select>
+              </label>
+            )}
+
+            {includeAudio && audioApps.length === 0 && (
+              <p className="muted">
+                Nenhum aplicativo tocando som agora. Abra o vídeo ou o jogo e clique em transmitir de novo para
+                escolher só o áudio dele.
+              </p>
+            )}
 
             <button className="button ghost" onClick={() => setPicker(null)}>
               Cancelar

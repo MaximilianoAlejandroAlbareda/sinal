@@ -6,6 +6,17 @@ export type CaptureSource = {
   thumbnail: string
 }
 
+export type AudioProcess = {
+  pid: number
+  name: string
+}
+
+export type AudioChunk = {
+  buffer: Float32Array | number[]
+  channels: number
+  sampleRate: number
+}
+
 declare global {
   interface Window {
     sinal?: {
@@ -14,6 +25,10 @@ declare global {
       selectSource: (id: string, audio: boolean) => Promise<void>
       clearSource: () => Promise<void>
       lanInfo: () => Promise<{ port: number; addresses: string[] }>
+      listAudioProcesses: () => Promise<AudioProcess[]>
+      startAudioCapture: (pid: number) => Promise<boolean>
+      stopAudioCapture: () => Promise<boolean>
+      onAudioData: (callback: (chunk: AudioChunk) => void) => () => void
       onRefit: (callback: () => void) => () => void
     }
   }
