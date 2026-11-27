@@ -57,7 +57,7 @@ export function boostAudio(
     gain.gain.cancelScheduledValues(now)
     // Desce na hora (som forte não estoura) e sobe devagar (o volume não bombeia).
     // Quando onSwitch for chamado, força uma descida rápida para evitar estalo.
-    const constant = target < current ? (onSwitch ? 0.15 : 0.008) : 0.35
+    const constant = target < current ? (onSwitch ? 0.05 : 0.02) : 0.15
     gain.gain.setTargetAtTime(target, now, constant)
     current = current + (target - current) * (constant < 0.05 ? 0.9 : 0.35)
   }, 100)
