@@ -26,9 +26,20 @@ export type StreamStats = {
   outKbps: number
   capture: { width: number; height: number; fps: number } | null
   peers: PeerStat[]
+  // Frames que o encoder realmente produziu, somando os espectadores conectados. É o
+  // que separa "a captura parou" de "a minha janela está atrás do jogo": o preview local
+  // para de ser composto nesse caso, mas os frames continuam saindo.
+  sentFrames: number
+  connectedPeers: number
 }
 
-const EMPTY_STATS: StreamStats = { outKbps: 0, capture: null, peers: [] }
+const EMPTY_STATS: StreamStats = {
+  outKbps: 0,
+  capture: null,
+  peers: [],
+  sentFrames: 0,
+  connectedPeers: 0,
+}
 
 // Cada espectador custa um upload completo do anfitrião (mesh P2P): com mais gente
 // na sala a qualidade por pessoa precisa cair, senão a banda estoura e todos travam.
@@ -452,6 +463,7 @@ export function useRoom(room: string, name: string, isHost: boolean) {
     const sample = async () => {
       const rows: PeerStat[] = []
       let total = 0
+      let sent = 0
 
       for (const [peerId, pc] of pcsRef.current) {
         if (pc.connectionState !== 'connected') continue
@@ -473,6 +485,7 @@ export function useRoom(room: string, name: string, isHost: boolean) {
         const kbps = last && at > last.at ? Math.max(0, ((bytes - last.bytes) * 8) / (at - last.at)) : 0
         previous.set(peerId, { bytes, at })
         total += kbps
+        sent += Number(video.framesEncoded ?? video.framesSent ?? 0)
 
         const transport = [...byId.values()].find((entry) => entry.type === 'transport')
         const pair = transport?.selectedCandidatePairId ? byId.get(transport.selectedCandidatePairId) : null
@@ -498,6 +511,8 @@ export function useRoom(room: string, name: string, isHost: boolean) {
             ? { width: settings.width, height: settings.height, fps: Math.round(settings.frameRate ?? 0) }
             : null,
         peers: rows,
+        sentFrames: sent,
+        connectedPeers: rows.length,
       })
     }
 

@@ -80,6 +80,7 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
   const [volume, setVolume] = useState(1)
   const lastVolumeRef = useRef(1)
   const [hasAudio, setHasAudio] = useState(false)
+  const [frozen, setFrozen] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [copied, setCopied] = useState(false)
   const [shareError, setShareError] = useState('')
@@ -100,6 +101,8 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
   const geometryRef = useRef('')
   const lastRefitRef = useRef(0)
   const refitRef = useRef<() => void>(() => {})
+  const sentRef = useRef({ frames: -1, changedAt: 0, peers: 0 })
+  const refitsRef = useRef<number[]>([])
 
   const stream = isHost ? localStream : remoteStream
   const sharing = Boolean(localStream)
@@ -198,24 +201,79 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
     }
   }, [pickerOpen])
 
-  // Se a fonte mudar de formato no meio da transmissão (tela cheia, rotação, troca
-  // de resolução), recaptura e troca a track para o enquadramento voltar ao normal.
+  // Se a fonte mudar de formato no meio da transmissão (tela cheia, rotação), recaptura e
+  // troca a track para o enquadramento voltar ao normal. Só a PROPORÇÃO importa: um jogo
+  // que troca de resolução mantendo 16:9 continua enquadrado, e recapturar ali custava um
+  // engasgo (troca de track + novo keyframe) sem corrigir nada.
   useEffect(() => {
     const element = videoRef.current
     if (!element || !isHost || !localStream || !window.sinal) return
 
     const check = () => {
       if (!element.videoWidth || !element.videoHeight) return
-      const geometry = `${element.videoWidth}x${element.videoHeight}`
-      if (geometryRef.current && geometryRef.current !== geometry) void refit()
-      geometryRef.current = geometry
+      const aspect = element.videoWidth / element.videoHeight
+      const previous = Number(geometryRef.current)
+      geometryRef.current = String(aspect)
+      if (previous && Math.abs(aspect - previous) / previous > 0.02) void refit()
     }
 
-    element.addEventListener('resize', check)
+    // Espera a janela parar de mudar de tamanho: entrar/sair da tela cheia mexe no tamanho
+    // em vários passos e cada recaptura no meio do caminho reiniciava o vídeo.
+    let timer = 0
+    const onResize = () => {
+      window.clearTimeout(timer)
+      timer = window.setTimeout(check, 400)
+    }
+
+    element.addEventListener('resize', onResize)
     check()
-    return () => element.removeEventListener('resize', check)
+    return () => {
+      window.clearTimeout(timer)
+      element.removeEventListener('resize', onResize)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isHost, localStream])
+
+  // A captura de janela no Windows (Windows Graphics Capture) só enxerga o que o DWM
+  // compõe. Um jogo em tela cheia exclusiva apresenta direto no monitor, então a track
+  // continua "ao vivo" mas sem frames novos: quem assiste vê a última imagem congelada.
+  // Nenhuma API de usuário resolve isso (nem OBS nem Discord capturam FSE sem injetar
+  // código no jogo) — o que dá é avisar e voltar sozinho quando o jogo sair do modo.
+  //
+  // O teste é sobre os frames do ENCODER (framesEncoded dos senders), não sobre o preview:
+  // com a janela do Sinal atrás do jogo o navegador para de compor o <video> e ele parece
+  // parado mesmo com o espectador recebendo imagem normalmente — isso dava alarme falso.
+  useEffect(() => {
+    const state = sentRef.current
+    // Espectador entrou ou saiu: recomeça a contagem para não acusar congelamento no
+    // primeiro segundo de quem acabou de conectar.
+    if (stats.connectedPeers !== state.peers) state.changedAt = performance.now()
+    state.peers = stats.connectedPeers
+    if (stats.sentFrames !== state.frames) {
+      state.frames = stats.sentFrames
+      state.changedAt = performance.now()
+    }
+  }, [stats])
+
+  useEffect(() => {
+    sentRef.current.changedAt = performance.now()
+    if (!isHost || !sharing) {
+      setFrozen(false)
+      return
+    }
+
+    const timer = window.setInterval(() => {
+      const state = sentRef.current
+      // Sem espectador conectado não há frames para contar: não é congelamento.
+      const stalled = state.peers > 0 && performance.now() - state.changedAt > 4000
+      setFrozen((previous) => (previous === stalled ? previous : stalled))
+    }, 500)
+
+    return () => {
+      window.clearInterval(timer)
+      setFrozen(false)
+    }
+  }, [isHost, sharing])
 
   // Quem abre o link está em outra máquina: o endereço tem que ser o IPv4 da rede
   // local, senão o convidado recebe um 127.0.0.1 que só existe no PC do anfitrião.
@@ -437,8 +495,16 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
   async function refit() {
     const sourceId = sourceIdRef.current
     if (!sourceId || !window.sinal?.isDesktop) return
-    if (Date.now() - lastRefitRef.current < 1500) return
-    lastRefitRef.current = Date.now()
+    const now = Date.now()
+    if (now - lastRefitRef.current < 1500) return
+    // Recapturar reinicia a track (e pede keyframe novo). Se a fonte oscilar de formato,
+    // isso viraria uma cascata de engasgos: depois de 3 recapturas em 10 s, para de tentar
+    // até o formato ficar estável.
+    const recent = refitsRef.current.filter((at) => now - at < 10_000)
+    if (recent.length >= 3) return
+    recent.push(now)
+    refitsRef.current = recent
+    lastRefitRef.current = now
     // A janela mudou de formato, mas o áudio do aplicativo não depende disso:
     // recapturar só o vídeo mantém o som no ar. Refazer o caminho completo aqui
     // reiniciava a captura do processo e cortava o áudio de quem está assistindo.
@@ -451,10 +517,16 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
         const videoTrack = video.getVideoTracks()[0]
         if (!videoTrack) return
         replaceCapture(new MediaStream([videoTrack, keepAudio]))
+        // A track nova já entra com o formato certo: sem isso o próximo `resize` do
+        // preview comparava com a proporção antiga e pedia outra recaptura.
+        const settings = videoTrack.getSettings()
+        if (settings.width && settings.height) geometryRef.current = String(settings.width / settings.height)
         return
       }
       const stream = await captureSelection(sourceId, sourceNameRef.current)
       replaceCapture(stream)
+      const settings = stream.getVideoTracks()[0]?.getSettings()
+      if (settings?.width && settings?.height) geometryRef.current = String(settings.width / settings.height)
     } catch {
       /* segue com a captura atual */
     }
@@ -661,6 +733,14 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
 
           {shareError && <p className="field-error pad">{shareError}</p>}
           {isHost && audioWarning && <p className="field-error pad">{audioWarning}</p>}
+          {isHost && sharing && frozen && (
+            <p className="field-error pad">
+              Quem está assistindo parou de receber imagem. Se o jogo está em{' '}
+              <strong>tela cheia exclusiva</strong>, o Windows não entrega essa imagem para a captura de
+              janela (só o modo <strong>janela sem bordas</strong> é capturável). Coloque o jogo nesse modo e
+              a imagem volta sozinha; se não voltar, encerre e transmita de novo.
+            </p>
+          )}
         </main>
 
         <aside className="sidebar">
@@ -710,6 +790,11 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
                     <span className="stat-value">
                       {row.width}×{row.height} · {row.fps} fps · {formatRate(row.kbps)}
                       {row.rtt !== null ? ` · ${row.rtt} ms` : ''}
+                      {row.limiter === 'cpu'
+                        ? ' · CPU no limite'
+                        : row.limiter === 'bandwidth'
+                          ? ' · rede no limite'
+                          : ''}
                     </span>
                   </li>
                 ))}
