@@ -47,12 +47,20 @@ export function boostAudio(
 
   let peak = 0
   let current = 1
+  let quietTicks = 0
   const timer = window.setInterval(() => {
     analyser.getFloatTimeDomainData(buffer)
     peak = 0
     for (const value of buffer) peak = Math.max(peak, Math.abs(value))
 
-    const target = peak < SILENCE ? 0 : Math.min(MAX_GAIN, TARGET_PEAK / Math.max(peak, 0.0001))
+    // Uma janela zerada no meio da música não é silêncio: a captura do processo às
+    // vezes entrega um bloco atrasado e o medidor vê ~40 ms de zeros. Fechar o ganho
+    // aí cortava o som por ~300 ms a cada engasgo. Só fecha em silêncio sustentado
+    // (3 leituras, ~300 ms) e segura o ganho nos engasgos curtos.
+    const quiet = peak < SILENCE
+    quietTicks = quiet ? quietTicks + 1 : 0
+    let target = Math.min(MAX_GAIN, TARGET_PEAK / Math.max(peak, 0.0001))
+    if (quiet) target = quietTicks < 3 ? current : 0
     const now = ctx.currentTime
     gain.gain.cancelScheduledValues(now)
     // Desce na hora (som forte não estoura) e sobe devagar (o volume não bombeia).

@@ -323,7 +323,12 @@ export function useRoom(room: string, name: string, isHost: boolean) {
         }
       }
 
-      previous.getTracks().forEach((track) => track.stop())
+      // A recaptura de vídeo reaproveita a track de áudio que já está no ar: parar
+      // tudo o que veio da captura anterior matava justamente esse som.
+      const kept = new Set(stream.getTracks())
+      previous.getTracks().forEach((track) => {
+        if (!kept.has(track)) track.stop()
+      })
     },
     [publish],
   )

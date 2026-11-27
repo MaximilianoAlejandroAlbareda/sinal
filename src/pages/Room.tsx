@@ -79,6 +79,8 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
   const [picker, setPicker] = useState<CaptureSource[] | null>(null)
   const [includeAudio, setIncludeAudio] = useState(true)
   const [muted, setMuted] = useState(false)
+  const [hasAudio, setHasAudio] = useState(false)
+  const [isFullscreen, setIsFullscreen] = useState(false)
   const [copied, setCopied] = useState(false)
   const [shareError, setShareError] = useState('')
   const [lan, setLan] = useState<{ host: string; port: number } | null>(null)
@@ -91,6 +93,7 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
   const audioModeRef = useRef<AudioMode>({ kind: 'none' })
 
   const videoRef = useRef<HTMLVideoElement>(null)
+  const frameRef = useRef<HTMLDivElement>(null)
   const chatEndRef = useRef<HTMLDivElement>(null)
   const sourceIdRef = useRef<string | null>(null)
   const sourceNameRef = useRef('')
@@ -104,6 +107,37 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
   useEffect(() => {
     if (videoRef.current) videoRef.current.srcObject = stream
   }, [stream])
+
+  // A track de áudio chega em um evento separado do vídeo e pode nem existir: sem
+  // isso o botão de som ficava ativo sem nada para silenciar.
+  useEffect(() => {
+    if (!stream) {
+      setHasAudio(false)
+      return
+    }
+    const sync = () => setHasAudio(stream.getAudioTracks().length > 0)
+    sync()
+    stream.addEventListener('addtrack', sync)
+    stream.addEventListener('removetrack', sync)
+    return () => {
+      stream.removeEventListener('addtrack', sync)
+      stream.removeEventListener('removetrack', sync)
+    }
+  }, [stream])
+
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(document.fullscreenElement === frameRef.current)
+    document.addEventListener('fullscreenchange', onChange)
+    return () => document.removeEventListener('fullscreenchange', onChange)
+  }, [])
+
+  function toggleFullscreen() {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen().catch(() => {})
+      return
+    }
+    void frameRef.current?.requestFullscreen?.().catch(() => {})
+  }
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ block: 'end' })
@@ -296,9 +330,27 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
   }
 
   async function captureSelection(sourceId: string, sourceName: string): Promise<MediaStream> {
-    const mode = resolveAudioMode(sourceName)
+    let mode = resolveAudioMode(sourceName)
+    // O nome só casa quando o título da janela traz o nome do app: o Spotify mostra o
+    // nome da faixa, jogo mostra o nome da cena, e aí o automático desistia. O pid
+    // dono da janela acerta nos dois casos.
+    if (includeAudio && audioChoice === 'auto') {
+      try {
+        const detected = await window.sinal?.resolveAudioForSource?.(sourceId)
+        if (detected) mode = { kind: 'app', pid: detected }
+      } catch {
+        /* sem o mapa de janelas: segue pelo nome */
+      }
+    }
     audioModeRef.current = mode
     releaseAudio()
+
+    // Modo automático sem aplicativo correspondente: antes saía mudo e sem aviso.
+    if (mode.kind === 'none' && includeAudio && audioChoice === 'auto') {
+      setAudioWarning(
+        'A transmissão saiu sem som: a janela escolhida não bateu com nenhum aplicativo tocando áudio. Em "Áudio de", escolha o app (ou "Todo o som do sistema") e transmita de novo.',
+      )
+    }
 
     if (mode.kind === 'app') {
       await window.sinal?.selectSource(sourceId, false)
@@ -339,6 +391,11 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
         video: CAPTURE_VIDEO,
         audio: CAPTURE_AUDIO,
       })
+      if (includeAudio && captured.getAudioTracks().length === 0) {
+        setAudioWarning(
+          'A transmissão saiu sem áudio: marque "compartilhar o som da aba" na janela do navegador e transmita de novo.',
+        )
+      }
       publish(withBoostedAudio(captured, () => {}))
     } catch (err) {
       const failure = err as Error
@@ -365,7 +422,20 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
     if (!sourceId || !window.sinal?.isDesktop) return
     if (Date.now() - lastRefitRef.current < 1500) return
     lastRefitRef.current = Date.now()
+    // A janela mudou de formato, mas o áudio do aplicativo não depende disso:
+    // recapturar só o vídeo mantém o som no ar. Refazer o caminho completo aqui
+    // reiniciava a captura do processo e cortava o áudio de quem está assistindo.
+    const audio = localStream?.getAudioTracks()[0]
+    const keepAudio = audioModeRef.current.kind === 'app' && audio?.readyState === 'live' ? audio : null
     try {
+      if (keepAudio) {
+        await window.sinal?.selectSource(sourceId, false)
+        const video = await navigator.mediaDevices.getDisplayMedia({ video: CAPTURE_VIDEO, audio: false })
+        const videoTrack = video.getVideoTracks()[0]
+        if (!videoTrack) return
+        replaceCapture(new MediaStream([videoTrack, keepAudio]))
+        return
+      }
       const stream = await captureSelection(sourceId, sourceNameRef.current)
       replaceCapture(stream)
     } catch {
@@ -441,7 +511,7 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
 
       <div className="layout">
         <main className="stage">
-          <div className={`video-frame${live && stream ? ' is-live' : ''}`}>
+          <div ref={frameRef} className={`video-frame${live && stream ? ' is-live' : ''}`}>
             {/* O anfitrião já ouve o próprio áudio direto no sistema: tocar o preview
                 aqui fazia o loopback recapturar esse som em laço (o retorno). */}
             {stream ? (
@@ -465,19 +535,22 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
 
             {stream && (
               <div className="stage-tools">
-                {!isHost && (
+                {/* Sem track de áudio não há o que silenciar: um botão ativo aqui só confundia. */}
+                {!isHost && hasAudio && (
                   <button className="button ghost small" onClick={() => setMuted((value) => !value)}>
                     {muted ? 'Ativar som' : 'Silenciar'}
                   </button>
                 )}
-                {/* Mostrar botão fullscreen apenas quando não estiver compartilhando um app específico
-                   (exclusive fullscreen quebra a captura de app no Windows) */}
-                {!isHost && audioModeRef.current?.kind !== 'app' && (
-                  <button
-                    className="button ghost small"
-                    onClick={() => videoRef.current?.requestFullscreen?.().catch(() => {})}
-                  >
-                    Tela cheia
+                {!isHost && !hasAudio && (
+                  <span className="stage-hint" title="O anfitrião está transmitindo sem áudio">
+                    Sem áudio
+                  </span>
+                )}
+                {/* A tela cheia vai no quadro, não no <video>: assim o som e o medidor
+                   continuam acessíveis em vez dos controles nativos desabilitados. */}
+                {!isHost && (
+                  <button className="button ghost small" onClick={toggleFullscreen}>
+                    {isFullscreen ? 'Sair da tela cheia' : 'Tela cheia'}
                   </button>
                 )}
               </div>

@@ -429,6 +429,19 @@ input:focus {
   background: #000;
 }
 
+/* Tela cheia no quadro inteiro: os controles próprios (som, medidor) continuam ali. */
+.video-frame:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  border: 0;
+  border-radius: 0;
+  background: #000;
+}
+
+.video-frame:fullscreen .stage-tools {
+  opacity: 1;
+}
+
 .empty-stage {
   display: flex;
   flex-direction: column;
@@ -517,6 +530,22 @@ input:focus {
 
 .video-frame:hover .stage-tools {
   opacity: 1;
+}
+
+.stage-hint {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 59, 92, 0.4);
+  background: rgba(10, 11, 16, 0.75);
+  color: #ff809a;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  backdrop-filter: blur(8px);
 }
 
 .stage-tools .button {

@@ -5,6 +5,7 @@ const path = require('node:path')
 const fs = require('node:fs')
 const { app, BrowserWindow, Menu, dialog, desktopCapturer, ipcMain, session } = require('electron')
 const { startServer } = require('../server/signaling')
+const { audioPidForSource, warmWindowMap } = require('./window-pids')
 
 const requestedPort = Number(process.env.PORT)
 const PORT = Number.isInteger(requestedPort) && requestedPort > 0 ? requestedPort : 8787
@@ -182,6 +183,18 @@ app.whenReady().then(async () => {
     }
   })
 
+  // Qual sessão de áudio pertence à janela escolhida: exato, sem depender do nome.
+  ipcMain.handle('audio:resolve', async (_event, sourceId) => {
+    const capture = getAudioCapture()
+    if (!capture) return null
+    try {
+      return await audioPidForSource(String(sourceId || ''), capture.getProcessList() || [])
+    } catch (err) {
+      console.error('Falha ao identificar o áudio da janela:', err.message)
+      return null
+    }
+  })
+
   ipcMain.handle('audio:start', (_event, pid) => {
     const capture = getAudioCapture()
     if (!capture) return false
@@ -228,6 +241,9 @@ app.whenReady().then(async () => {
   )
 
   ipcMain.handle('capture:list', async () => {
+    // Aquece o mapa janela -> processo enquanto o seletor está aberto: quando a
+    // pessoa escolhe a janela, o áudio do app já pode ser identificado na hora.
+    warmWindowMap()
     const sources = await desktopCapturer.getSources({
       types: ['screen', 'window'],
       thumbnailSize: { width: 320, height: 180 },

@@ -1,7 +1,7 @@
 {
   "name": "sinal",
   "private": true,
-  "version": "0.1.2",
+  "version": "0.1.4",
   "description": "Compartilhamento de tela e streaming de jogos entre amigos, estilo Discord",
   "main": "electron/main.js",
   "scripts": {

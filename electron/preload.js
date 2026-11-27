@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('sinal', {
   clearSource: () => ipcRenderer.invoke('capture:clear'),
   lanInfo: () => ipcRenderer.invoke('app:lan'),
   listAudioProcesses: () => ipcRenderer.invoke('audio:list'),
+  resolveAudioForSource: (sourceId) => ipcRenderer.invoke('audio:resolve', sourceId),
   startAudioCapture: (pid) => ipcRenderer.invoke('audio:start', pid),
   stopAudioCapture: () => ipcRenderer.invoke('audio:stop'),
   onAudioData: (callback) => {

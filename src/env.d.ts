@@ -26,6 +26,8 @@ declare global {
       clearSource: () => Promise<void>
       lanInfo: () => Promise<{ port: number; addresses: string[] }>
       listAudioProcesses: () => Promise<AudioProcess[]>
+      /** Pid da sessão de áudio dona da janela capturada (desktop, Windows). */
+      resolveAudioForSource: (sourceId: string) => Promise<number | null>
       startAudioCapture: (pid: number) => Promise<boolean>
       stopAudioCapture: () => Promise<boolean>
       onAudioData: (callback: (chunk: AudioChunk) => void) => () => void
