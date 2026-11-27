@@ -9,32 +9,32 @@ type AudioLevelProps = {
 
 export function AudioLevel({ stream, width = 180, height = 60, style }: AudioLevelProps) {
   const [peaks, setPeaks] = useState<number[]>([])
-  const ctxRef = useRef<AudioContext | null>(null)
-  const analyserRef = useRef<AnalyserNode | null>(null)
   const hasTrackRef = useRef(false)
 
   useEffect(() => {
-    ctxRef.current = new AudioContext({ sampleRate: 48000 })
+    let rafId = 0
+    let cancelled = false
     const track = stream?.getAudioTracks()[0]
     hasTrackRef.current = !!track
     if (!track) {
-      // Nenhum track de áudio: mostrar estado silencioso em vez de tentar conectar
+      // Nenhum track de áudio: estado silencioso, sem criar AudioContext (evita
+      // estourar o limite de ~6 contextos do Chromium).
       setPeaks([0])
       return
     }
 
-    const input = ctxRef.current.createMediaStreamSource(new MediaStream([track]))
-    const analyser = ctxRef.current.createAnalyser()
+    const ctx = new AudioContext({ sampleRate: 48000 })
+    const input = ctx.createMediaStreamSource(new MediaStream([track]))
+    const analyser = ctx.createAnalyser()
     analyser.fftSize = 256
     analyser.minDecibels = -90
     analyser.maxDecibels = -10
     analyser.smoothingTimeConstant = 0.8
     input.connect(analyser)
 
-    analyserRef.current = analyser
-
     const dataArray = new Uint8Array(analyser.frequencyBinCount)
     const render = () => {
+      if (cancelled) return
       try {
         analyser.getByteFrequencyData(dataArray)
         const average = dataArray.reduce((a: number, b: number) => a + b, 0) / dataArray.length
@@ -42,13 +42,17 @@ export function AudioLevel({ stream, width = 180, height = 60, style }: AudioLev
       } catch (e) {
         // Erro ao ler dados (contexto fechado, etc.)
       }
-      requestAnimationFrame(render)
+      rafId = requestAnimationFrame(render)
     }
 
     render()
 
     return () => {
-      ctxRef.current?.close()
+      cancelled = true
+      cancelAnimationFrame(rafId)
+      input.disconnect()
+      analyser.disconnect()
+      void ctx.close().catch(() => {})
     }
   }, [stream])
 
@@ -56,9 +60,9 @@ export function AudioLevel({ stream, width = 180, height = 60, style }: AudioLev
   const maxPeak = peaks.length > 0 ? Math.max(...peaks) : 0
   const barHeight = (maxPeak / 255) * height // Analyser retorna 0-255
 
-  // Posicionamento fixo: bottom/right do viewport
+  // Posiciona dentro do quadro do vídeo (.video-frame é position: relative)
   const containerStyle: React.CSSProperties = {
-    position: 'fixed',
+    position: 'absolute',
     bottom: 8,
     right: 8,
     zIndex: 1000,
@@ -83,7 +87,7 @@ export function AudioLevel({ stream, width = 180, height = 60, style }: AudioLev
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            color: rgb(138, 147, 170),
+            color: 'rgb(138, 147, 170)',
             fontSize: 11,
           }}
         >

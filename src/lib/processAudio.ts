@@ -39,23 +39,26 @@ export async function startProcessAudio(pid: number): Promise<ProcessAudio | nul
     if (!raw || !raw.length) return
 
     const interleaved = raw instanceof Float32Array ? raw : Float32Array.from(raw as ArrayLike<number>)
-    const channels = Math.max(1, Math.min(2, Number(chunk.channels) || 1))
+    // `frames` usa os canais REAIS do chunk (5.1/7.1 incluem); a saída é limitada
+    // a 2 canais, então só os dois primeiros são copiados.
+    const sourceChannels = Math.max(1, Math.round(Number(chunk.channels) || 1))
+    const channels = Math.min(2, sourceChannels)
     const sampleRate = Number(chunk.sampleRate) || 48000
-    const frames = Math.floor(interleaved.length / (Number(chunk.channels) || 1))
+    const frames = Math.floor(interleaved.length / sourceChannels)
     if (!frames) return
+    if (pending >= MAX_PENDING) return
 
     // O AudioData quer os canais em blocos separados (planar), não intercalados.
     const planar = new Float32Array(frames * channels)
     for (let i = 0; i < frames; i += 1) {
       for (let c = 0; c < channels; c += 1) {
-        const value = interleaved[i * (Number(chunk.channels) || 1) + (c < (Number(chunk.channels) || 1) ? c : 0)] || 0
+        const value = interleaved[i * sourceChannels + c] || 0
         planar[c * frames + i] = value
         const level = Math.abs(value)
         if (level > peak) peak = level
       }
     }
 
-    if (pending >= MAX_PENDING) return
     pending += 1
     const frame = new AudioData({
       format: 'f32-planar',

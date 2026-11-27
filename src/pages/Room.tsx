@@ -463,8 +463,6 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
               </div>
             )}
 
-            
-
             {stream && (
               <div className="stage-tools">
                 {!isHost && (
@@ -484,14 +482,17 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
                 )}
               </div>
             )}
-          </div>
 
-          {/* Audio level meter visible only for viewers, not the host */}
-          {!isHost && live && stream && (
-            <div style={{ position: 'absolute', bottom: 8, right: 8, zIndex: 10 }}>
-              <AudioLevel stream={stream} width={180} height={60} />
-            </div>
-          )}
+            {/* Medidor de áudio: só para espectadores, dentro do quadro do vídeo */}
+            {!isHost && live && stream && (
+              <AudioLevel
+                stream={stream}
+                width={180}
+                height={60}
+                style={{ bottom: 12, left: 12 }}
+              />
+            )}
+          </div>
 
           <div className="controls">
             <div className="controls-info">
@@ -592,7 +593,7 @@ function RoomView({ code, name, isHost }: { code: string; name: string; isHost: 
             </header>
             <div className="messages">
               {messages.map((message) => {
-                message.system ? (
+                return message.system ? (
                   <p key={message.id} className="system-message">
                     {message.text}
                   </p>
